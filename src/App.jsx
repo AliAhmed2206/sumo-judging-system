@@ -10,6 +10,13 @@ import RulesView from './components/RulesView';
 
 import { INITIAL_TEAMS, INITIAL_MATCHES, DEFAULT_JUDGES, TOURNAMENT_METADATA } from './data/initialData';
 import { HistoryTracker } from './utils/historyManager';
+import { 
+  fetchRemoteState, 
+  pushRemoteState, 
+  getStoredUserRole, 
+  setStoredUserRole, 
+  UserRole 
+} from './utils/cloudSync';
 
 const STORAGE_KEY = 'sumo_robot_championship_ejust_v4_minimal_undo';
 
@@ -17,6 +24,18 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('ring');
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [toastMessage, setToastMessage] = useState(null);
+
+  // User Role (Judge vs Spectator)
+  const [userRole, setUserRoleState] = useState(getStoredUserRole);
+  const setUserRole = (newRole) => {
+    setUserRoleState(newRole);
+    setStoredUserRole(newRole);
+    showToast(newRole === UserRole.JUDGE ? 'Unlocked Referee / Judge Mode' : 'Switched to Live Spectator Mode');
+  };
+
+  // Cloud Sync State
+  const [syncStatus, setSyncStatus] = useState('CONNECTED'); // 'CONNECTED' | 'SYNCING' | 'OFFLINE'
+  const [lastSyncedAt, setLastSyncedAt] = useState(null);
 
   // Load initial state
   const loadInitialData = () => {
@@ -67,14 +86,108 @@ export default function App() {
     }
   }, [tournamentState]);
 
-  // Universal State Mutation with Action Tracking
+  // Universal State Mutation with Action Tracking & Automatic Cloud Push
   const mutateTournamentState = (updater, actionName = 'Update') => {
     setTournamentState(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      historyRef.current.pushState(next, actionName);
+      const updatedState = {
+        ...next,
+        lastUpdated: new Date().toISOString()
+      };
+      historyRef.current.pushState(updatedState, actionName);
       updateHistoryFlags();
-      return next;
+
+      // Cloud Push (Instant sync to all spectators)
+      setSyncStatus('SYNCING');
+      pushRemoteState(updatedState).then(ok => {
+        if (ok) {
+          setSyncStatus('CONNECTED');
+          setLastSyncedAt(new Date().toLocaleTimeString());
+        } else {
+          setSyncStatus('OFFLINE');
+        }
+      });
+
+      return updatedState;
     });
+  };
+
+  // Cloud Realtime Listener & Periodic Poller
+  useEffect(() => {
+    let isSubscribed = true;
+
+    const performCloudSync = async () => {
+      try {
+        const remote = await fetchRemoteState();
+        if (!isSubscribed || !remote) return;
+
+        setTournamentState(local => {
+          const localTime = new Date(local.lastUpdated || 0).getTime();
+          const remoteTime = new Date(remote.lastUpdated || 0).getTime();
+
+          // If remote is newer than local, sync remote down
+          if (remoteTime > localTime) {
+            setSyncStatus('CONNECTED');
+            setLastSyncedAt(new Date().toLocaleTimeString());
+            return remote;
+          } else if (localTime > remoteTime && userRole === UserRole.JUDGE) {
+            // Push local to remote
+            pushRemoteState(local);
+          }
+          return local;
+        });
+      } catch (err) {
+        console.warn('Sync tick error', err);
+      }
+    };
+
+    // Initial sync
+    performCloudSync();
+
+    // Poll every 3 seconds for live score updates from arena
+    const interval = setInterval(performCloudSync, 3000);
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
+  }, [userRole]);
+
+  // Manual Force Sync
+  const handleForceSync = async () => {
+    setSyncStatus('SYNCING');
+    showToast('Synchronizing with cloud...');
+    const remote = await fetchRemoteState();
+    if (remote) {
+      const localTime = new Date(tournamentState.lastUpdated || 0).getTime();
+      const remoteTime = new Date(remote.lastUpdated || 0).getTime();
+      if (remoteTime > localTime) {
+        setTournamentState(remote);
+        showToast('Pulled latest scores from cloud!');
+      } else {
+        await pushRemoteState(tournamentState);
+        showToast('Pushed latest scores to cloud!');
+      }
+      setSyncStatus('CONNECTED');
+      setLastSyncedAt(new Date().toLocaleTimeString());
+    } else {
+      await pushRemoteState(tournamentState);
+      setSyncStatus('CONNECTED');
+      showToast('Cloud connected!');
+    }
+  };
+
+  // Share Live Link to Clipboard
+  const handleShareLink = () => {
+    const url = window.location.href.split('?')[0];
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(url).then(() => {
+        showToast('Copied live link to clipboard!');
+      }).catch(() => {
+        prompt('Copy this live link for spectators:', url);
+      });
+    } else {
+      prompt('Copy this live link for spectators:', url);
+    }
   };
 
   // Undo Handler
@@ -83,6 +196,7 @@ export default function App() {
     if (result) {
       setTournamentState(result.state);
       updateHistoryFlags();
+      pushRemoteState(result.state);
       showToast(`Undid: ${result.undoneAction}`);
     }
   }, [updateHistoryFlags]);
@@ -93,6 +207,7 @@ export default function App() {
     if (result) {
       setTournamentState(result.state);
       updateHistoryFlags();
+      pushRemoteState(result.state);
       showToast(`Redid: ${result.redoneAction}`);
     }
   }, [updateHistoryFlags]);
@@ -100,7 +215,7 @@ export default function App() {
   // Global Keyboard Shortcuts (Ctrl+Z for Undo, Ctrl+Y or Ctrl+Shift+Z for Redo)
   useEffect(() => {
     const handleKeyDown = (e) => {
-      // Ignore when focused in text inputs unless it's Ctrl+Z
+      if (userRole !== UserRole.JUDGE) return;
       if (e.ctrlKey || e.metaKey) {
         if (e.key === 'z' || e.key === 'Z') {
           if (e.shiftKey) {
@@ -119,7 +234,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo]);
+  }, [handleUndo, handleRedo, userRole]);
 
   // Match Scoring & Automatic Advancement
   const handleFinishMatch = (matchId, winnerId, loserId, finalScoreA, finalScoreB) => {
@@ -258,7 +373,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Top Navbar with Undo/Redo & Tabs */}
+      {/* Top Navbar with Undo/Redo, Live Sync & Tabs */}
       <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -272,6 +387,12 @@ export default function App() {
         canRedo={canRedo}
         soundEnabled={soundEnabled}
         setSoundEnabled={setSoundEnabled}
+        userRole={userRole}
+        setUserRole={setUserRole}
+        syncStatus={syncStatus}
+        lastSyncedAt={lastSyncedAt}
+        onForceSync={handleForceSync}
+        onShareLink={handleShareLink}
       />
 
       {/* Main Workspace */}
@@ -284,6 +405,8 @@ export default function App() {
             onUndo={handleUndo}
             canUndo={canUndo}
             soundEnabled={soundEnabled}
+            userRole={userRole}
+            onUnlockJudgeMode={() => setUserRole(UserRole.JUDGE)}
           />
         )}
 
@@ -336,6 +459,8 @@ export default function App() {
             <span className="font-bold text-[#d99c26]">{TOURNAMENT_METADATA.title}</span>
             <span>•</span>
             <span>{TOURNAMENT_METADATA.organizer}</span>
+            <span>•</span>
+            <span className="text-emerald-400">Cloud Sync: {syncStatus}</span>
           </div>
           <div>
             {TOURNAMENT_METADATA.host} | October 30, 2026 | Press Ctrl+Z to Undo any action

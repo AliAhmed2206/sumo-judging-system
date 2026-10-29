@@ -23,8 +23,11 @@ export default function MatchJudgeView({
   onUpdateMatchScore,
   onUndo,
   canUndo,
-  soundEnabled 
+  soundEnabled,
+  userRole = 'SPECTATOR',
+  onUnlockJudgeMode
 }) {
+  const isJudge = userRole === 'JUDGE';
   const [viewLayout, setViewLayout] = useState('SPLIT'); // 'SPLIT', 'ARENA_1', 'ARENA_2'
 
   // --- ARENA 1 STATE ---
@@ -283,52 +286,59 @@ export default function MatchJudgeView({
           </div>
 
           {/* Timer Controls */}
-          <div className="flex items-center justify-center gap-1.5 mt-2.5">
-            {!isRunning ? (
+          {isJudge ? (
+            <div className="flex items-center justify-center gap-1.5 mt-2.5">
+              {!isRunning ? (
+                <button
+                  onClick={() => {
+                    if (isA1) setRunningA1(true); else setRunningA2(true);
+                    if (soundEnabled) playSound('start');
+                    addLog(arenaName, 'Timer started');
+                  }}
+                  className="px-4 py-1.5 rounded font-mono font-bold text-xs bg-[#d99c26] text-[#1b1002] hover:bg-[#f5b945] flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>START</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    if (isA1) setRunningA1(false); else setRunningA2(false);
+                    if (soundEnabled) playSound('pause');
+                    addLog(arenaName, 'Timer paused');
+                  }}
+                  className="px-4 py-1.5 rounded font-mono font-bold text-xs bg-amber-600 text-white hover:bg-amber-500 flex items-center gap-1 transition-colors cursor-pointer"
+                >
+                  <Pause className="w-3.5 h-3.5 fill-current" />
+                  <span>PAUSE</span>
+                </button>
+              )}
+
+              <button
+                onClick={() => resetArenaTimer(arenaNum, timerMode)}
+                className="p-1.5 rounded bg-[#1c0812] text-gray-300 border border-[#3b1222] hover:text-white cursor-pointer"
+                title="Reset Timer"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+              </button>
+
               <button
                 onClick={() => {
-                  if (isA1) setRunningA1(true); else setRunningA2(true);
-                  if (soundEnabled) playSound('start');
-                  addLog(arenaName, 'Timer started');
+                  if (soundEnabled) playSound('buzzer');
+                  addLog(arenaName, 'Referee Horn sounded');
                 }}
-                className="px-4 py-1.5 rounded font-mono font-bold text-xs bg-[#d99c26] text-[#1b1002] hover:bg-[#f5b945] flex items-center gap-1 transition-colors"
+                className="p-1.5 rounded bg-[#1c0812] text-[#d99c26] border border-[#3b1222] hover:text-white cursor-pointer"
+                title="Sound Arena Horn"
               >
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>START</span>
+                <Volume2 className="w-3.5 h-3.5" />
               </button>
-            ) : (
-              <button
-                onClick={() => {
-                  if (isA1) setRunningA1(false); else setRunningA2(false);
-                  if (soundEnabled) playSound('pause');
-                  addLog(arenaName, 'Timer paused');
-                }}
-                className="px-4 py-1.5 rounded font-mono font-bold text-xs bg-amber-600 text-white hover:bg-amber-500 flex items-center gap-1 transition-colors"
-              >
-                <Pause className="w-3.5 h-3.5 fill-current" />
-                <span>PAUSE</span>
-              </button>
-            )}
-
-            <button
-              onClick={() => resetArenaTimer(arenaNum, timerMode)}
-              className="p-1.5 rounded bg-[#1c0812] text-gray-300 border border-[#3b1222] hover:text-white"
-              title="Reset Timer"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-
-            <button
-              onClick={() => {
-                if (soundEnabled) playSound('buzzer');
-                addLog(arenaName, 'Referee Horn sounded');
-              }}
-              className="p-1.5 rounded bg-[#1c0812] text-[#d99c26] border border-[#3b1222] hover:text-white"
-              title="Sound Arena Horn"
-            >
-              <Volume2 className="w-3.5 h-3.5" />
-            </button>
-          </div>
+            </div>
+          ) : (
+            <div className="text-[10px] font-mono text-[#a68f97] mt-2 flex items-center justify-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span>OFFICIAL ARENA TIMER STREAMING</span>
+            </div>
+          )}
 
           {/* Timer Mode Selectors */}
           <div className="flex flex-wrap items-center justify-center gap-1 mt-2.5 pt-2 border-t border-[#1a060e] text-[9px] font-mono">
@@ -401,22 +411,28 @@ export default function MatchJudgeView({
             </div>
 
             {/* Buttons */}
-            <div className="grid grid-cols-2 gap-1 pt-1">
-              <button
-                onClick={() => handleScore(match, 'A', 1)}
-                disabled={!teamA}
-                className="py-1.5 px-2 rounded font-mono font-bold text-[11px] bg-rose-900 text-white hover:bg-rose-800 disabled:opacity-30"
-              >
-                +1 Win
-              </button>
-              <button
-                onClick={() => handleScore(match, 'A', -1)}
-                disabled={!teamA || (match?.scoreA || 0) === 0}
-                className="py-1.5 px-1 rounded font-mono text-[10px] bg-[#1a0812] text-gray-400 hover:text-white border border-[#2b0f19] disabled:opacity-30"
-              >
-                -1
-              </button>
-            </div>
+            {isJudge ? (
+              <div className="grid grid-cols-2 gap-1 pt-1">
+                <button
+                  onClick={() => handleScore(match, 'A', 1)}
+                  disabled={!teamA}
+                  className="py-1.5 px-2 rounded font-mono font-bold text-[11px] bg-rose-900 text-white hover:bg-rose-800 disabled:opacity-30 cursor-pointer"
+                >
+                  +1 Win
+                </button>
+                <button
+                  onClick={() => handleScore(match, 'A', -1)}
+                  disabled={!teamA || (match?.scoreA || 0) === 0}
+                  className="py-1.5 px-1 rounded font-mono text-[10px] bg-[#1a0812] text-gray-400 hover:text-white border border-[#2b0f19] disabled:opacity-30 cursor-pointer"
+                >
+                  -1
+                </button>
+              </div>
+            ) : (
+              <div className="py-1 text-center font-mono text-[10px] text-[#a68f97] bg-[#0c0307] rounded border border-[#1f0812]">
+                Official Score
+              </div>
+            )}
 
             {/* Warning Counter */}
             <div className="flex items-center justify-between text-[10px] font-mono text-gray-400 pt-1">
@@ -463,32 +479,40 @@ export default function MatchJudgeView({
             </div>
 
             {/* Buttons */}
-            <div className="grid grid-cols-2 gap-1 pt-1">
-              <button
-                onClick={() => handleScore(match, 'B', 1)}
-                disabled={!teamB}
-                className="py-1.5 px-2 rounded font-mono font-bold text-[11px] bg-blue-900 text-white hover:bg-blue-800 disabled:opacity-30"
-              >
-                +1 Win
-              </button>
-              <button
-                onClick={() => handleScore(match, 'B', -1)}
-                disabled={!teamB || (match?.scoreB || 0) === 0}
-                className="py-1.5 px-1 rounded font-mono text-[10px] bg-[#101424] text-gray-400 hover:text-white border border-[#1e2742] disabled:opacity-30"
-              >
-                -1
-              </button>
-            </div>
+            {isJudge ? (
+              <div className="grid grid-cols-2 gap-1 pt-1">
+                <button
+                  onClick={() => handleScore(match, 'B', 1)}
+                  disabled={!teamB}
+                  className="py-1.5 px-2 rounded font-mono font-bold text-[11px] bg-blue-900 text-white hover:bg-blue-800 disabled:opacity-30 cursor-pointer"
+                >
+                  +1 Win
+                </button>
+                <button
+                  onClick={() => handleScore(match, 'B', -1)}
+                  disabled={!teamB || (match?.scoreB || 0) === 0}
+                  className="py-1.5 px-1 rounded font-mono text-[10px] bg-[#101424] text-gray-400 hover:text-white border border-[#1e2742] disabled:opacity-30 cursor-pointer"
+                >
+                  -1
+                </button>
+              </div>
+            ) : (
+              <div className="py-1 text-center font-mono text-[10px] text-[#a68f97] bg-[#07080f] rounded border border-[#141b2c]">
+                Official Score
+              </div>
+            )}
 
             {/* Warning Counter */}
             <div className="flex items-center justify-between text-[10px] font-mono text-gray-400 pt-1">
               <span>Foul: {warningsB}/2</span>
-              <button
-                onClick={() => handlePenalty(arenaNum, 'B', 'False Start / Stoppage')}
-                className="text-blue-400 hover:underline"
-              >
-                +Warning (§8.4)
-              </button>
+              {isJudge && (
+                <button
+                  onClick={() => handlePenalty(arenaNum, 'B', 'False Start / Stoppage')}
+                  className="text-blue-400 hover:underline cursor-pointer"
+                >
+                  +Warning (§8.4)
+                </button>
+              )}
             </div>
           </div>
 
@@ -496,30 +520,41 @@ export default function MatchJudgeView({
 
         {/* Action Bar: Bottle Challenge & Conclude Match */}
         <div className="pt-2 border-t border-[#240a15] flex items-center justify-between gap-2 text-xs">
-          <button
-            onClick={() => setBottleModal({ arena: arenaName, matchId: match?.id, timeA: '', timeB: '' })}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-[#1c0812] text-[#d99c26] border border-[#3b1222] font-mono text-[10px] hover:bg-[#280c1a]"
-          >
-            <Wine className="w-3.5 h-3.5" />
-            <span>Bottle Challenge (§10.2)</span>
-          </button>
+          {isJudge ? (
+            <>
+              <button
+                onClick={() => setBottleModal({ arena: arenaName, matchId: match?.id, timeA: '', timeB: '' })}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded bg-[#1c0812] text-[#d99c26] border border-[#3b1222] font-mono text-[10px] hover:bg-[#280c1a] cursor-pointer"
+              >
+                <Wine className="w-3.5 h-3.5" />
+                <span>Bottle Challenge (§10.2)</span>
+              </button>
 
-          <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => handleConcludeMatch(match, teamA?.id)}
-              disabled={!teamA}
-              className="px-2.5 py-1.5 rounded bg-[#2a0e19] text-rose-300 font-mono font-bold text-[10px] border border-rose-900/60 hover:bg-rose-950 disabled:opacity-30"
-            >
-              Red Wins
-            </button>
-            <button
-              onClick={() => handleConcludeMatch(match, teamB?.id)}
-              disabled={!teamB}
-              className="px-2.5 py-1.5 rounded bg-[#0d162b] text-blue-300 font-mono font-bold text-[10px] border border-blue-900/60 hover:bg-blue-950 disabled:opacity-30"
-            >
-              Blue Wins
-            </button>
-          </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => handleConcludeMatch(match, teamA?.id)}
+                  disabled={!teamA}
+                  className="px-2.5 py-1.5 rounded bg-[#2a0e19] text-rose-300 font-mono font-bold text-[10px] border border-rose-900/60 hover:bg-rose-950 disabled:opacity-30 cursor-pointer"
+                >
+                  Red Wins
+                </button>
+                <button
+                  onClick={() => handleConcludeMatch(match, teamB?.id)}
+                  disabled={!teamB}
+                  className="px-2.5 py-1.5 rounded bg-[#0d162b] text-blue-300 font-mono font-bold text-[10px] border border-blue-900/60 hover:bg-blue-950 disabled:opacity-30 cursor-pointer"
+                >
+                  Blue Wins
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="w-full flex items-center justify-between text-[11px] font-mono py-1 px-2.5 rounded bg-[#0a0206] border border-[#200812]">
+              <span className="text-[#a68f97]">MATCH STATUS:</span>
+              <span className={`font-bold ${match?.status === 'COMPLETED' ? 'text-emerald-400' : 'text-[#f5b945]'}`}>
+                {match?.status === 'COMPLETED' ? `CONCLUDED (Winner: ${getTeam(match.winnerId)?.name || 'Winner'})` : 'IN PROGRESS'}
+              </span>
+            </div>
+          )}
         </div>
 
       </div>
@@ -528,6 +563,25 @@ export default function MatchJudgeView({
 
   return (
     <div className="space-y-4 pb-16">
+      {/* Live Spectator Mode Banner */}
+      {!isJudge && (
+        <div className="flex items-center justify-between p-3 rounded-lg bg-[#1a0812] border border-[#d99c26]/50 text-xs font-mono text-[#f4ede2] shadow-md animate-fade-in">
+          <div className="flex items-center gap-2.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            <div>
+              <span className="font-bold text-[#d99c26]">LIVE BROADCAST FEED:</span>
+              <span className="text-[#a68f97] ml-2 hidden sm:inline">Viewing Arena 1 & Arena 2 live timers and scores directly from judges table.</span>
+            </div>
+          </div>
+          <button
+            onClick={onUnlockJudgeMode}
+            className="px-3 py-1 rounded bg-[#2b0e1b] hover:bg-[#381223] text-[#f5b945] font-bold border border-[#d99c26]/60 text-[11px] transition-colors cursor-pointer shrink-0"
+          >
+            Referee Deck Access →
+          </button>
+        </div>
+      )}
+
       {/* Top Deck Toolbar */}
       <div className="flex items-center justify-between p-2.5 rounded bg-[#14050d] border border-[#2d0e1b] text-xs">
         <div className="flex items-center gap-3">
