@@ -20,7 +20,7 @@ import {
   getClientId
 } from './utils/cloudSync';
 
-const STORAGE_KEY = 'sumo_robot_championship_ejust_v5_consensus_sync';
+const STORAGE_KEY = 'sumo_robot_championship_ejust_v6_one_system';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('ring');
@@ -32,15 +32,18 @@ export default function App() {
   const setUserRole = (newRole) => {
     setUserRoleState(newRole);
     setStoredUserRole(newRole);
-    showToast(newRole === UserRole.JUDGE ? 'Unlocked Referee / Judge Mode' : 'Switched to Live Spectator Mode');
+    showToast(newRole === UserRole.JUDGE ? 'Referee Mode Enabled (Scores & Homologation Editable)' : 'Switched to Read-Only Spectator View');
   };
 
-  // Cloud Sync State
+  // Cloud Sync Status & Timing
   const [syncStatus, setSyncStatus] = useState('CONNECTING'); // 'CONNECTING' | 'CONNECTED' | 'SYNCING' | 'OFFLINE'
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
   const [isInitialHydrated, setIsInitialHydrated] = useState(false);
 
-  // Load initial fallback state (with uninitialized timestamp so cloud always overrides)
+  // Timestamp of the most recent local user edit (prevents polling collision)
+  const lastLocalEditTimeRef = useRef(0);
+
+  // Initial fallback baseline
   const getInitialFallback = () => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -50,27 +53,24 @@ export default function App() {
           return parsed;
         }
       }
-    } catch {
-      // Fallback
-    }
+    } catch {}
     return {
       teams: INITIAL_TEAMS,
       matches: INITIAL_MATCHES,
       judges: DEFAULT_JUDGES,
       prizeEvaluations: {},
       revision: 0,
-      lastUpdated: '1970-01-01T00:00:00.000Z' // Zero timestamp guarantees remote state takes precedence on start
+      lastUpdated: '1970-01-01T00:00:00.000Z'
     };
   };
 
   const [tournamentState, setTournamentState] = useState(getInitialFallback);
 
-  // History Tracker instance
+  // History Tracker instance for local Undo/Redo
   const historyRef = useRef(new HistoryTracker(tournamentState));
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
 
-  // Sync canUndo/canRedo flags
   const updateHistoryFlags = useCallback(() => {
     setCanUndo(historyRef.current.canUndo());
     setCanRedo(historyRef.current.canRedo());
@@ -81,7 +81,7 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 2500);
   };
 
-  // Persist to localStorage
+  // Keep localStorage updated as local fallback cache
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(tournamentState));
@@ -90,11 +90,13 @@ export default function App() {
     }
   }, [tournamentState]);
 
-  // Universal State Mutation with Action Tracking & Instant Multi-Referee Cloud Broadcast
+  // Universal State Mutation: Writes locally, tracks timestamp, and immediately broadcasts to cloud
   const mutateTournamentState = (updater, actionName = 'Update') => {
+    lastLocalEditTimeRef.current = Date.now();
+    const nowIso = new Date().toISOString();
+
     setTournamentState(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
-      const nowIso = new Date().toISOString();
       const updatedState = {
         ...next,
         revision: (prev.revision || 0) + 1,
@@ -105,7 +107,7 @@ export default function App() {
       historyRef.current.pushState(updatedState, actionName);
       updateHistoryFlags();
 
-      // Instant Cloud Broadcast to all devices
+      // Instant cloud broadcast
       setSyncStatus('SYNCING');
       pushRemoteState(updatedState).then(ok => {
         if (ok) {
@@ -120,22 +122,23 @@ export default function App() {
     });
   };
 
-  // Cloud Realtime Listener & Periodic Poller (Runs every 2 seconds for instant referee consensus)
+  // High-Frequency Unified Cloud Poller (Every 1.5 seconds)
+  // Ensures ALL devices stay on the exact same live tournament system
   useEffect(() => {
     let isSubscribed = true;
 
-    const performCloudSync = async () => {
+    const syncWithCloud = async () => {
       try {
         const remote = await fetchRemoteState();
         if (!isSubscribed) return;
 
         if (remote) {
           setTournamentState(local => {
-            const merged = mergeTournamentStates(local, remote);
-            const localStr = JSON.stringify(local.matches) + JSON.stringify(local.teams) + JSON.stringify(local.prizeEvaluations);
-            const mergedStr = JSON.stringify(merged.matches) + JSON.stringify(merged.teams) + JSON.stringify(merged.prizeEvaluations);
+            const merged = mergeTournamentStates(local, remote, lastLocalEditTimeRef.current);
+            const localSig = `${local.revision}_${local.lastUpdated}`;
+            const mergedSig = `${merged.revision}_${merged.lastUpdated}`;
 
-            if (localStr !== mergedStr || !isInitialHydrated) {
+            if (localSig !== mergedSig || !isInitialHydrated) {
               setLastSyncedAt(new Date().toLocaleTimeString());
               setSyncStatus('CONNECTED');
               setIsInitialHydrated(true);
@@ -145,9 +148,9 @@ export default function App() {
             return local;
           });
         } else {
-          // If remote empty and local has modifications, seed remote
+          // If remote is empty but local has real data, initialize cloud
           setTournamentState(local => {
-            if (local.revision > 0) {
+            if ((local.revision || 0) > 0) {
               pushRemoteState(local);
             }
             setSyncStatus('CONNECTED');
@@ -160,44 +163,37 @@ export default function App() {
       }
     };
 
-    // Initial immediate sync
-    performCloudSync();
+    // Immediate initial sync on component mount
+    syncWithCloud();
 
-    // Poll every 2 seconds
-    const interval = setInterval(performCloudSync, 2000);
+    // Fast 1.5-second live loop
+    const interval = setInterval(syncWithCloud, 1500);
     return () => {
       isSubscribed = false;
       clearInterval(interval);
     };
   }, [isInitialHydrated]);
 
-  // Manual Force Sync Handler (Guarantees fresh pull & broadcast)
-  const handleForceSync = async () => {
+  // Hard Refresh from Cloud (One-Tap Fix for any device that feels out-of-sync)
+  const handleHardRefreshFromCloud = async () => {
     setSyncStatus('SYNCING');
-    showToast('Synchronizing with Cloud Ledger...');
+    showToast('Connecting directly to live cloud ledger...');
     try {
+      localStorage.removeItem(STORAGE_KEY);
       const remote = await fetchRemoteState();
       if (remote) {
-        let mergedResult;
-        setTournamentState(local => {
-          mergedResult = mergeTournamentStates(local, remote);
-          return mergedResult;
-        });
-        if (mergedResult) {
-          await pushRemoteState(mergedResult);
-        }
+        setTournamentState(remote);
         setSyncStatus('CONNECTED');
         setLastSyncedAt(new Date().toLocaleTimeString());
-        showToast('All Referee & Arena Data Synchronized!');
+        showToast(`Synced! Live Ledger Revision #${remote.revision || 0}`);
       } else {
         await pushRemoteState(tournamentState);
         setSyncStatus('CONNECTED');
-        setLastSyncedAt(new Date().toLocaleTimeString());
-        showToast('Local Data Broadcasted to Cloud!');
+        showToast('Connected to cloud!');
       }
-    } catch (e) {
+    } catch {
       setSyncStatus('OFFLINE');
-      showToast('Sync error. Check internet.');
+      showToast('Unable to reach cloud. Check internet.');
     }
   };
 
@@ -219,11 +215,13 @@ export default function App() {
   const handleUndo = useCallback(() => {
     const result = historyRef.current.undo();
     if (result) {
+      lastLocalEditTimeRef.current = Date.now();
       const nowIso = new Date().toISOString();
       const updated = {
         ...result.state,
         lastUpdated: nowIso,
-        revision: (result.state.revision || 0) + 1
+        revision: (result.state.revision || 0) + 1,
+        lastEditor: getClientId()
       };
       setTournamentState(updated);
       updateHistoryFlags();
@@ -236,11 +234,13 @@ export default function App() {
   const handleRedo = useCallback(() => {
     const result = historyRef.current.redo();
     if (result) {
+      lastLocalEditTimeRef.current = Date.now();
       const nowIso = new Date().toISOString();
       const updated = {
         ...result.state,
         lastUpdated: nowIso,
-        revision: (result.state.revision || 0) + 1
+        revision: (result.state.revision || 0) + 1,
+        lastEditor: getClientId()
       };
       setTournamentState(updated);
       updateHistoryFlags();
@@ -375,7 +375,8 @@ export default function App() {
         judges: DEFAULT_JUDGES,
         prizeEvaluations: {},
         revision: (tournamentState.revision || 0) + 1,
-        lastUpdated: nowIso
+        lastUpdated: nowIso,
+        lastEditor: getClientId()
       };
       mutateTournamentState(resetState, 'Reset Tournament Draw');
     }
@@ -439,7 +440,7 @@ export default function App() {
         setUserRole={setUserRole}
         syncStatus={syncStatus}
         lastSyncedAt={lastSyncedAt}
-        onForceSync={handleForceSync}
+        onForceSync={handleHardRefreshFromCloud}
         onShareLink={handleShareLink}
       />
 
@@ -509,11 +510,11 @@ export default function App() {
             <span>{TOURNAMENT_METADATA.organizer}</span>
             <span>•</span>
             <span className="text-emerald-400 font-bold">
-              ● Multi-Referee Live Sync: {syncStatus} {lastSyncedAt ? `(${lastSyncedAt})` : ''}
+              ● ONE LIVE SYSTEM · Rev #{tournamentState.revision || 0} {lastSyncedAt ? `(${lastSyncedAt})` : ''}
             </span>
           </div>
           <div>
-            {TOURNAMENT_METADATA.host} | October 30, 2026 | All Referee Updates Instant
+            {TOURNAMENT_METADATA.host} | October 30, 2026 | Instant Multi-Device Consensus
           </div>
         </div>
       </footer>

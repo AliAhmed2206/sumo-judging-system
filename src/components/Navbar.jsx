@@ -126,7 +126,7 @@ export default function Navbar({
                 : 'bg-rose-500'
             }`} />
             <span className="font-bold text-white">
-              {syncStatus === 'SYNCING' ? 'SYNCING...' : syncStatus === 'CONNECTED' ? 'CLOUD LIVE' : 'RECONNECT'}
+              {syncStatus === 'SYNCING' ? 'SYNCING...' : syncStatus === 'CONNECTED' ? `LIVE #${tournamentState.revision || 0}` : 'RECONNECT'}
             </span>
             {lastSyncedAt && (
               <span className="text-[9px] text-[#f5b945] hidden md:inline">

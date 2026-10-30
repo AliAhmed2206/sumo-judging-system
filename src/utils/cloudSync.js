@@ -1,8 +1,8 @@
 // Cloud Realtime State Synchronizer & Multi-Referee Consensus Engine
-// Enables zero-conflict, instant live sync across referee decks, arenas, and spectator devices
+// Unifies all referees, arenas, and spectator devices into ONE single live authoritative tournament system
 
 const DEFAULT_SYNC_URL = 'https://kvdb.io/4cR4WT9tG8R6LjTMaf9zAp/tournament_state';
-const ROLE_STORAGE_KEY = 'sumo_user_role_ejust_v2';
+const ROLE_STORAGE_KEY = 'sumo_user_role_ejust_v3';
 const CLIENT_ID_KEY = 'sumo_client_id_ejust';
 
 export const UserRole = {
@@ -32,11 +32,15 @@ export const getStoredUserRole = () => {
       localStorage.setItem(ROLE_STORAGE_KEY, UserRole.JUDGE);
       return UserRole.JUDGE;
     }
+    if (params.get('role') === 'spectator' || params.get('view') === '1') {
+      localStorage.setItem(ROLE_STORAGE_KEY, UserRole.SPECTATOR);
+      return UserRole.SPECTATOR;
+    }
   } catch {}
 
   const saved = localStorage.getItem(ROLE_STORAGE_KEY);
-  // Default to JUDGE if URL or local storage requested, else SPECTATOR
-  return saved === UserRole.JUDGE ? UserRole.JUDGE : UserRole.JUDGE; // Default to JUDGE on competition day so all referees can edit seamlessly!
+  // Default to JUDGE so all referee devices have editing enabled by default
+  return saved === UserRole.SPECTATOR ? UserRole.SPECTATOR : UserRole.JUDGE;
 };
 
 export const setStoredUserRole = (role) => {
@@ -88,102 +92,52 @@ export async function pushRemoteState(state, url = DEFAULT_SYNC_URL) {
   }
 }
 
-// Smart State Merger: Intelligently merges local and remote states
-// Prevents Arena 1 referee from overwriting Arena 2 referee's scores or homologation inspections
-export function mergeTournamentStates(local, remote) {
+// Single Source of Truth Consensus Merger
+// Guarantees all devices synchronize onto the exact same live ledger
+export function mergeTournamentStates(local, remote, lastLocalEditTimestamp = 0) {
   if (!remote) return local;
   if (!local) return remote;
 
-  // If local is virgin default and remote has activity, take remote
-  const localHasEdits = local.matches.some(m => m.status === 'COMPLETED' || m.scoreA > 0 || m.scoreB > 0) ||
-                        local.teams.some(t => t.homologation?.status !== 'PASSED');
+  const now = Date.now();
+  const hasRecentPendingLocalEdit = (now - lastLocalEditTimestamp) < 3000;
 
-  const remoteHasEdits = remote.matches.some(m => m.status === 'COMPLETED' || m.scoreA > 0 || m.scoreB > 0) ||
-                         remote.teams.some(t => t.homologation?.status !== 'PASSED');
-
-  if (!localHasEdits && remoteHasEdits) {
+  // Normal case: Device has no pending unpushed local click in the last 3s.
+  // The cloud is the 100% authoritative truth!
+  if (!hasRecentPendingLocalEdit) {
     return remote;
   }
 
-  // Deep entity-by-entity merge
-  // 1. Matches: Compare each match individually
-  const mergedMatches = local.matches.map(localMatch => {
-    const remoteMatch = remote.matches.find(m => m.id === localMatch.id);
-    if (!remoteMatch) return localMatch;
-
-    // Compare timestamps or completion status
-    const localTime = new Date(localMatch.updatedAt || local.lastUpdated || 0).getTime();
-    const remoteTime = new Date(remoteMatch.updatedAt || remote.lastUpdated || 0).getTime();
-
-    // If one is COMPLETED and the other is not, COMPLETED takes precedence
-    if (remoteMatch.status === 'COMPLETED' && localMatch.status !== 'COMPLETED') {
-      return remoteMatch;
+  // Rare case: user tapped a score or homologation button within the last 3s
+  // and a background poll ticked before the push completed.
+  // Overlay only the freshly edited local entity on top of remote, bump revision, and return.
+  const mergedMatches = remote.matches.map(rm => {
+    const lm = local.matches.find(m => m.id === rm.id);
+    if (!lm) return rm;
+    if (lm.updatedAt && (now - new Date(lm.updatedAt).getTime()) < 3000) {
+      return lm;
     }
-    if (localMatch.status === 'COMPLETED' && remoteMatch.status !== 'COMPLETED') {
-      return localMatch;
-    }
-
-    // If scores differ, take the match with higher score or newer timestamp
-    const localPoints = (localMatch.scoreA || 0) + (localMatch.scoreB || 0);
-    const remotePoints = (remoteMatch.scoreA || 0) + (remoteMatch.scoreB || 0);
-
-    if (remotePoints > localPoints) {
-      return remoteMatch;
-    }
-    if (localPoints > remotePoints) {
-      return localMatch;
-    }
-
-    // If remote has winner or source assigned that local lacks
-    if (remoteMatch.winnerId && !localMatch.winnerId) return remoteMatch;
-    if (remoteMatch.teamAId && !localMatch.teamAId) return remoteMatch;
-    if (remoteMatch.teamBId && !localMatch.teamBId) return remoteMatch;
-
-    // Otherwise, newer timestamp wins
-    return remoteTime > localTime ? remoteMatch : localMatch;
+    return rm;
   });
 
-  // 2. Teams (Homologation Inspection checks)
-  const mergedTeams = local.teams.map(localTeam => {
-    const remoteTeam = remote.teams.find(t => t.id === localTeam.id);
-    if (!remoteTeam) return localTeam;
-
-    const localTime = new Date(localTeam.updatedAt || local.lastUpdated || 0).getTime();
-    const remoteTime = new Date(remoteTeam.updatedAt || remote.lastUpdated || 0).getTime();
-
-    return remoteTime > localTime ? remoteTeam : localTeam;
+  const mergedTeams = remote.teams.map(rt => {
+    const lt = local.teams.find(t => t.id === rt.id);
+    if (!lt) return rt;
+    if (lt.updatedAt && (now - new Date(lt.updatedAt).getTime()) < 3000) {
+      return lt;
+    }
+    return rt;
   });
-
-  // 3. Special Prizes Evaluations
-  const mergedPrizeEvaluations = {
-    ...(remote.prizeEvaluations || {}),
-    ...(local.prizeEvaluations || {})
-  };
-
-  // For any overlapping keys, take the one with newer timestamp
-  if (remote.prizeEvaluations && local.prizeEvaluations) {
-    Object.keys(remote.prizeEvaluations).forEach(key => {
-      const remoteEval = remote.prizeEvaluations[key];
-      const localEval = local.prizeEvaluations[key];
-      if (remoteEval && localEval) {
-        const rTime = new Date(remoteEval.timestamp || 0).getTime();
-        const lTime = new Date(localEval.timestamp || 0).getTime();
-        mergedPrizeEvaluations[key] = rTime > lTime ? remoteEval : localEval;
-      }
-    });
-  }
-
-  const latestLastUpdated = Math.max(
-    new Date(local.lastUpdated || 0).getTime(),
-    new Date(remote.lastUpdated || 0).getTime()
-  );
 
   return {
-    ...local,
-    teams: mergedTeams,
+    ...remote,
     matches: mergedMatches,
-    prizeEvaluations: mergedPrizeEvaluations,
-    lastUpdated: new Date(latestLastUpdated).toISOString(),
-    revision: Math.max(local.revision || 0, remote.revision || 0) + 1
+    teams: mergedTeams,
+    prizeEvaluations: {
+      ...(remote.prizeEvaluations || {}),
+      ...(local.prizeEvaluations || {})
+    },
+    revision: Math.max(local.revision || 0, remote.revision || 0) + 1,
+    lastUpdated: new Date().toISOString(),
+    lastEditor: getClientId()
   };
 }
