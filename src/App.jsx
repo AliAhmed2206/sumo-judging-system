@@ -13,12 +13,14 @@ import { HistoryTracker } from './utils/historyManager';
 import { 
   fetchRemoteState, 
   pushRemoteState, 
+  mergeTournamentStates,
   getStoredUserRole, 
   setStoredUserRole, 
-  UserRole 
+  UserRole,
+  getClientId
 } from './utils/cloudSync';
 
-const STORAGE_KEY = 'sumo_robot_championship_ejust_v4_minimal_undo';
+const STORAGE_KEY = 'sumo_robot_championship_ejust_v5_consensus_sync';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('ring');
@@ -34,11 +36,12 @@ export default function App() {
   };
 
   // Cloud Sync State
-  const [syncStatus, setSyncStatus] = useState('CONNECTED'); // 'CONNECTED' | 'SYNCING' | 'OFFLINE'
+  const [syncStatus, setSyncStatus] = useState('CONNECTING'); // 'CONNECTING' | 'CONNECTED' | 'SYNCING' | 'OFFLINE'
   const [lastSyncedAt, setLastSyncedAt] = useState(null);
+  const [isInitialHydrated, setIsInitialHydrated] = useState(false);
 
-  // Load initial state
-  const loadInitialData = () => {
+  // Load initial fallback state (with uninitialized timestamp so cloud always overrides)
+  const getInitialFallback = () => {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
@@ -55,11 +58,12 @@ export default function App() {
       matches: INITIAL_MATCHES,
       judges: DEFAULT_JUDGES,
       prizeEvaluations: {},
-      lastUpdated: new Date().toISOString()
+      revision: 0,
+      lastUpdated: '1970-01-01T00:00:00.000Z' // Zero timestamp guarantees remote state takes precedence on start
     };
   };
 
-  const [tournamentState, setTournamentState] = useState(loadInitialData);
+  const [tournamentState, setTournamentState] = useState(getInitialFallback);
 
   // History Tracker instance
   const historyRef = useRef(new HistoryTracker(tournamentState));
@@ -86,18 +90,22 @@ export default function App() {
     }
   }, [tournamentState]);
 
-  // Universal State Mutation with Action Tracking & Automatic Cloud Push
+  // Universal State Mutation with Action Tracking & Instant Multi-Referee Cloud Broadcast
   const mutateTournamentState = (updater, actionName = 'Update') => {
     setTournamentState(prev => {
       const next = typeof updater === 'function' ? updater(prev) : updater;
+      const nowIso = new Date().toISOString();
       const updatedState = {
         ...next,
-        lastUpdated: new Date().toISOString()
+        revision: (prev.revision || 0) + 1,
+        lastUpdated: nowIso,
+        lastEditor: getClientId()
       };
+
       historyRef.current.pushState(updatedState, actionName);
       updateHistoryFlags();
 
-      // Cloud Push (Instant sync to all spectators)
+      // Instant Cloud Broadcast to all devices
       setSyncStatus('SYNCING');
       pushRemoteState(updatedState).then(ok => {
         if (ok) {
@@ -112,67 +120,84 @@ export default function App() {
     });
   };
 
-  // Cloud Realtime Listener & Periodic Poller
+  // Cloud Realtime Listener & Periodic Poller (Runs every 2 seconds for instant referee consensus)
   useEffect(() => {
     let isSubscribed = true;
 
     const performCloudSync = async () => {
       try {
         const remote = await fetchRemoteState();
-        if (!isSubscribed || !remote) return;
+        if (!isSubscribed) return;
 
-        setTournamentState(local => {
-          const localTime = new Date(local.lastUpdated || 0).getTime();
-          const remoteTime = new Date(remote.lastUpdated || 0).getTime();
+        if (remote) {
+          setTournamentState(local => {
+            const merged = mergeTournamentStates(local, remote);
+            const localStr = JSON.stringify(local.matches) + JSON.stringify(local.teams) + JSON.stringify(local.prizeEvaluations);
+            const mergedStr = JSON.stringify(merged.matches) + JSON.stringify(merged.teams) + JSON.stringify(merged.prizeEvaluations);
 
-          // If remote is newer than local, sync remote down
-          if (remoteTime > localTime) {
+            if (localStr !== mergedStr || !isInitialHydrated) {
+              setLastSyncedAt(new Date().toLocaleTimeString());
+              setSyncStatus('CONNECTED');
+              setIsInitialHydrated(true);
+              return merged;
+            }
             setSyncStatus('CONNECTED');
-            setLastSyncedAt(new Date().toLocaleTimeString());
-            return remote;
-          } else if (localTime > remoteTime && userRole === UserRole.JUDGE) {
-            // Push local to remote
-            pushRemoteState(local);
-          }
-          return local;
-        });
+            return local;
+          });
+        } else {
+          // If remote empty and local has modifications, seed remote
+          setTournamentState(local => {
+            if (local.revision > 0) {
+              pushRemoteState(local);
+            }
+            setSyncStatus('CONNECTED');
+            return local;
+          });
+        }
       } catch (err) {
         console.warn('Sync tick error', err);
+        setSyncStatus('OFFLINE');
       }
     };
 
-    // Initial sync
+    // Initial immediate sync
     performCloudSync();
 
-    // Poll every 3 seconds for live score updates from arena
-    const interval = setInterval(performCloudSync, 3000);
+    // Poll every 2 seconds
+    const interval = setInterval(performCloudSync, 2000);
     return () => {
       isSubscribed = false;
       clearInterval(interval);
     };
-  }, [userRole]);
+  }, [isInitialHydrated]);
 
-  // Manual Force Sync
+  // Manual Force Sync Handler (Guarantees fresh pull & broadcast)
   const handleForceSync = async () => {
     setSyncStatus('SYNCING');
-    showToast('Synchronizing with cloud...');
-    const remote = await fetchRemoteState();
-    if (remote) {
-      const localTime = new Date(tournamentState.lastUpdated || 0).getTime();
-      const remoteTime = new Date(remote.lastUpdated || 0).getTime();
-      if (remoteTime > localTime) {
-        setTournamentState(remote);
-        showToast('Pulled latest scores from cloud!');
+    showToast('Synchronizing with Cloud Ledger...');
+    try {
+      const remote = await fetchRemoteState();
+      if (remote) {
+        let mergedResult;
+        setTournamentState(local => {
+          mergedResult = mergeTournamentStates(local, remote);
+          return mergedResult;
+        });
+        if (mergedResult) {
+          await pushRemoteState(mergedResult);
+        }
+        setSyncStatus('CONNECTED');
+        setLastSyncedAt(new Date().toLocaleTimeString());
+        showToast('All Referee & Arena Data Synchronized!');
       } else {
         await pushRemoteState(tournamentState);
-        showToast('Pushed latest scores to cloud!');
+        setSyncStatus('CONNECTED');
+        setLastSyncedAt(new Date().toLocaleTimeString());
+        showToast('Local Data Broadcasted to Cloud!');
       }
-      setSyncStatus('CONNECTED');
-      setLastSyncedAt(new Date().toLocaleTimeString());
-    } else {
-      await pushRemoteState(tournamentState);
-      setSyncStatus('CONNECTED');
-      showToast('Cloud connected!');
+    } catch (e) {
+      setSyncStatus('OFFLINE');
+      showToast('Sync error. Check internet.');
     }
   };
 
@@ -194,9 +219,15 @@ export default function App() {
   const handleUndo = useCallback(() => {
     const result = historyRef.current.undo();
     if (result) {
-      setTournamentState(result.state);
+      const nowIso = new Date().toISOString();
+      const updated = {
+        ...result.state,
+        lastUpdated: nowIso,
+        revision: (result.state.revision || 0) + 1
+      };
+      setTournamentState(updated);
       updateHistoryFlags();
-      pushRemoteState(result.state);
+      pushRemoteState(updated);
       showToast(`Undid: ${result.undoneAction}`);
     }
   }, [updateHistoryFlags]);
@@ -205,9 +236,15 @@ export default function App() {
   const handleRedo = useCallback(() => {
     const result = historyRef.current.redo();
     if (result) {
-      setTournamentState(result.state);
+      const nowIso = new Date().toISOString();
+      const updated = {
+        ...result.state,
+        lastUpdated: nowIso,
+        revision: (result.state.revision || 0) + 1
+      };
+      setTournamentState(updated);
       updateHistoryFlags();
-      pushRemoteState(result.state);
+      pushRemoteState(updated);
       showToast(`Redid: ${result.redoneAction}`);
     }
   }, [updateHistoryFlags]);
@@ -236,8 +273,9 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [handleUndo, handleRedo, userRole]);
 
-  // Match Scoring & Automatic Advancement
+  // Match Scoring & Automatic Advancement (Attaches specific updatedAt to target match)
   const handleFinishMatch = (matchId, winnerId, loserId, finalScoreA, finalScoreB) => {
+    const nowIso = new Date().toISOString();
     mutateTournamentState(prev => {
       const matches = prev.matches.map(m => ({ ...m }));
       const targetMatchIndex = matches.findIndex(m => m.id === matchId);
@@ -249,11 +287,13 @@ export default function App() {
       targetMatch.loserId = loserId;
       targetMatch.scoreA = finalScoreA;
       targetMatch.scoreB = finalScoreB;
+      targetMatch.updatedAt = nowIso;
 
       // Advance Winner
       if (targetMatch.nextMatchId) {
         const nextMatch = matches.find(m => m.id === targetMatch.nextMatchId);
         if (nextMatch) {
+          nextMatch.updatedAt = nowIso;
           if (targetMatch.nextMatchSlot === 'teamA') {
             nextMatch.teamAId = winnerId;
           } else {
@@ -266,6 +306,7 @@ export default function App() {
       if (targetMatch.round === 'SEMI' && targetMatch.consolationMatchId) {
         const consolationMatch = matches.find(m => m.id === targetMatch.consolationMatchId);
         if (consolationMatch) {
+          consolationMatch.updatedAt = nowIso;
           if (targetMatch.consolationSlot === 'teamA') {
             consolationMatch.teamAId = loserId;
           } else {
@@ -276,37 +317,42 @@ export default function App() {
 
       return {
         ...prev,
-        matches,
-        lastUpdated: new Date().toISOString()
+        matches
       };
     }, `Conclude Match ${matchId}`);
   };
 
   const handleUpdateMatchScore = (matchId, scoreA, scoreB, desc = 'Update Score') => {
+    const nowIso = new Date().toISOString();
     mutateTournamentState(prev => ({
       ...prev,
-      matches: prev.matches.map(m => m.id === matchId ? { ...m, scoreA, scoreB } : m),
-      lastUpdated: new Date().toISOString()
+      matches: prev.matches.map(m => m.id === matchId ? { ...m, scoreA, scoreB, updatedAt: nowIso } : m)
     }), desc);
   };
 
   const handleSelectMatchForJudging = (matchId, arena) => {
+    const nowIso = new Date().toISOString();
     setActiveTab('ring');
     mutateTournamentState(prev => ({
       ...prev,
-      matches: prev.matches.map(m => m.id === matchId && m.status === 'SCHEDULED' ? { ...m, status: 'LIVE' } : m)
+      matches: prev.matches.map(m => m.id === matchId && m.status === 'SCHEDULED' ? { ...m, status: 'LIVE', updatedAt: nowIso } : m)
     }), `Set Match ${matchId} Live`);
   };
 
   const handleUpdateTeam = (updatedTeam, desc = 'Update Team') => {
+    const nowIso = new Date().toISOString();
+    const teamWithTimestamp = {
+      ...updatedTeam,
+      updatedAt: nowIso
+    };
     mutateTournamentState(prev => ({
       ...prev,
-      teams: prev.teams.map(t => t.id === updatedTeam.id ? updatedTeam : t),
-      lastUpdated: new Date().toISOString()
+      teams: prev.teams.map(t => t.id === updatedTeam.id ? teamWithTimestamp : t)
     }), desc);
   };
 
   const handleSavePrizeScore = (teamId, judgeId, scores, notes) => {
+    const nowIso = new Date().toISOString();
     mutateTournamentState(prev => ({
       ...prev,
       prizeEvaluations: {
@@ -314,21 +360,22 @@ export default function App() {
         [`${teamId}_${judgeId}`]: {
           ...scores,
           notes,
-          timestamp: new Date().toISOString()
+          timestamp: nowIso
         }
-      },
-      lastUpdated: new Date().toISOString()
+      }
     }), `Save Score for ${teamId} by ${judgeId}`);
   };
 
   const handleResetTournament = () => {
     if (window.confirm('Reset all match scores and homologation checks to the initial 22-team draw? You can undo this!')) {
+      const nowIso = new Date().toISOString();
       const resetState = {
         teams: INITIAL_TEAMS,
         matches: INITIAL_MATCHES,
         judges: DEFAULT_JUDGES,
         prizeEvaluations: {},
-        lastUpdated: new Date().toISOString()
+        revision: (tournamentState.revision || 0) + 1,
+        lastUpdated: nowIso
       };
       mutateTournamentState(resetState, 'Reset Tournament Draw');
     }
@@ -353,7 +400,7 @@ export default function App() {
         const parsed = JSON.parse(event.target.result);
         if (parsed.teams && parsed.matches) {
           mutateTournamentState(parsed, 'Import Tournament Data');
-          alert('Tournament data restored!');
+          alert('Tournament data restored & synchronized to cloud!');
         } else {
           alert('Invalid tournament data file.');
         }
@@ -368,12 +415,13 @@ export default function App() {
     <div className="min-h-screen bg-[#0d0407] text-[#f4ede2] flex flex-col font-sans selection:bg-[#bd325e] selection:text-white">
       {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed top-3 right-4 z-50 px-3 py-1.5 rounded bg-[#1f0b14] border border-[#d99c26] text-[#f5b945] font-mono text-xs shadow-xl animate-fade-in flex items-center gap-1.5">
+        <div className="fixed top-3 right-4 z-50 px-3.5 py-2 rounded bg-[#1f0b14] border border-[#d99c26] text-[#f5b945] font-mono text-xs shadow-xl animate-fade-in flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-[#f5b945] animate-ping" />
           <span>{toastMessage}</span>
         </div>
       )}
 
-      {/* Top Navbar with Undo/Redo, Live Sync & Tabs */}
+      {/* Top Navbar with Realtime Multi-Referee Sync Status & Actions */}
       <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -460,10 +508,12 @@ export default function App() {
             <span>•</span>
             <span>{TOURNAMENT_METADATA.organizer}</span>
             <span>•</span>
-            <span className="text-emerald-400">Cloud Sync: {syncStatus}</span>
+            <span className="text-emerald-400 font-bold">
+              ● Multi-Referee Live Sync: {syncStatus} {lastSyncedAt ? `(${lastSyncedAt})` : ''}
+            </span>
           </div>
           <div>
-            {TOURNAMENT_METADATA.host} | October 30, 2026 | Press Ctrl+Z to Undo any action
+            {TOURNAMENT_METADATA.host} | October 30, 2026 | All Referee Updates Instant
           </div>
         </div>
       </footer>

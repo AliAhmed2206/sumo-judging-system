@@ -112,48 +112,54 @@ export default function Navbar({
             </div>
           </div>
 
-          {/* Cloud Sync Status Indicator */}
-          <div 
+          {/* Realtime Multi-Referee Cloud Sync Badge & Button */}
+          <button
             onClick={onForceSync}
-            title={`Cloud Sync: ${syncStatus}. Click to force sync.`}
-            className="hidden sm:flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#1c0914] border border-[#3b1224] text-[9px] font-mono cursor-pointer hover:border-[#d99c26] transition-colors"
+            title={`Cloud Sync Status: ${syncStatus}. Click to force immediate sync with all referees.`}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#1c0914] border border-[#d99c26]/60 text-[10px] font-mono cursor-pointer hover:bg-[#2b0e1b] transition-all shadow-xs"
           >
-            <span className={`w-1.5 h-1.5 rounded-full ${
+            <span className={`w-2 h-2 rounded-full ${
               syncStatus === 'SYNCING' 
-                ? 'bg-amber-400 animate-spin' 
+                ? 'bg-amber-400 animate-ping' 
                 : syncStatus === 'CONNECTED' 
                 ? 'bg-emerald-400 animate-pulse' 
                 : 'bg-rose-500'
             }`} />
-            <span className="text-[#f4ede2] font-semibold">LIVE SYNC</span>
-          </div>
+            <span className="font-bold text-white">
+              {syncStatus === 'SYNCING' ? 'SYNCING...' : syncStatus === 'CONNECTED' ? 'CLOUD LIVE' : 'RECONNECT'}
+            </span>
+            {lastSyncedAt && (
+              <span className="text-[9px] text-[#f5b945] hidden md:inline">
+                {lastSyncedAt}
+              </span>
+            )}
+            <RefreshCw className={`w-3 h-3 text-[#d99c26] ${syncStatus === 'SYNCING' ? 'animate-spin' : ''}`} />
+          </button>
         </div>
 
         {/* Global Action Tools: Undo, Redo, Role Switcher, Share Link, Audio, Export */}
         <div className="flex items-center gap-1.5 font-mono text-xs flex-wrap">
           
-          {/* ROLE SWITCHER BUTTON */}
+          {/* ROLE SWITCHER BUTTON (1-Click Toggle for easy tournament management) */}
           {isJudge ? (
-            <div className="flex items-center gap-1 px-2 py-1 rounded bg-[#290e1b] border border-[#d99c26]/60 text-[#d99c26] text-[10px] font-bold">
+            <button
+              onClick={() => setUserRole(UserRole.SPECTATOR)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded bg-[#290e1b] border border-[#d99c26]/60 text-[#d99c26] text-[10px] font-bold hover:bg-[#381224] transition-colors cursor-pointer"
+              title="Click to switch to Read-Only Spectator View"
+            >
               <Unlock className="w-3 h-3 text-[#d99c26]" />
-              <span>JUDGE MODE</span>
-              <button
-                onClick={() => setUserRole(UserRole.SPECTATOR)}
-                className="ml-1 text-[9px] text-[#a68f97] hover:text-white underline cursor-pointer"
-                title="Switch to Spectator View"
-              >
-                (Lock)
-              </button>
-            </div>
+              <span>REFEREE DECK</span>
+              <span className="text-[8px] bg-[#d99c26] text-black px-1 rounded font-black">EDIT ON</span>
+            </button>
           ) : (
             <button
-              onClick={() => setShowRoleModal(true)}
-              className="flex items-center gap-1 px-2 py-1 rounded bg-[#16060e] border border-[#3b1224] text-[#a68f97] hover:text-white hover:border-[#d99c26] text-[10px] font-bold transition-colors cursor-pointer"
-              title="Click to enter Referee/Judge mode with PIN"
+              onClick={() => setUserRole(UserRole.JUDGE)}
+              className="flex items-center gap-1 px-2.5 py-1 rounded bg-[#16060e] border border-[#3b1224] text-[#a68f97] hover:text-white hover:border-[#d99c26] text-[10px] font-bold transition-colors cursor-pointer"
+              title="Click to enable Referee Scoring & Editing Mode"
             >
               <Eye className="w-3 h-3 text-[#a68f97]" />
-              <span>SPECTATOR VIEW</span>
-              <Lock className="w-2.5 h-2.5 text-[#d99c26]" />
+              <span>SPECTATOR</span>
+              <span className="text-[8px] bg-[#2a0e1c] text-[#f5b945] px-1 rounded border border-[#3d1428]">UNLOCK EDIT</span>
             </button>
           )}
 
